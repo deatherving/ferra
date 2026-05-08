@@ -1,0 +1,145 @@
+# Example: a consumer service that reads Ferra config via a ferra-agent sidecar.
+#
+# This is a TEMPLATE you copy into your own service's manifest. The pieces
+# that matter:
+#
+#   1. The `ferra-agent` container is in the same Pod as your service container.
+#      Both share the Pod's localhost (127.0.0.1) network namespace.
+#
+#   2. ferra-agent is declared as a "native sidecar" via initContainers with
+#      restartPolicy: Always (Kubernetes 1.29+). This guarantees:
+#         - the agent starts before the service
+#         - the service won't be restarted just because the agent crashed,
+#           but the agent IS restarted alongside Pod lifecycle
+#      For Kubernetes < 1.29, move the agent block to the regular `containers`
+#      list and accept the slight ordering race during pod startup (the
+#      service should retry until /readyz on the agent returns 200).
+#
+#   3. The service points at `http://localhost:9999` for all config reads.
+#      The agent does the SSE watch + cache + reconnect against ferra-server
+#      cluster-internally.
+#
+# Replace `payment-service` and the prefix list with your service's specifics.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: payment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: payment-service
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+
+      # === Sidecar declaration (Kubernetes 1.29+ native sidecars) ===
+      initContainers:
+        - name: ferra-agent
+          image: ghcr.io/deatherving/ferra-agent:latest  # build/push your own
+          restartPolicy: Always         # makes this a sidecar, not a one-shot init
+          env:
+            - name: FERRA_SERVER
+              value: "http://ferra-server.ferra.svc.cluster.local:8080"
+            - name: FERRA_PREFIX
+              # Comma-separated list. This service reads payment-specific
+              # config plus a few global flags.
+              value: "services/payment/,flags/global/"
+            - name: FERRA_AGENT_LISTEN
+              value: "127.0.0.1:9999"
+            - name: RUST_LOG
+              value: "ferra_agent=info"
+          ports:
+            - name: agent-local
+              containerPort: 9999
+              protocol: TCP
+          # Liveness: the agent process is up.
+          livenessProbe:
+            httpGet:
+              host: 127.0.0.1
+              port: 9999
+              path: /healthz
+            initialDelaySeconds: 1
+            periodSeconds: 10
+          # Readiness: snapshots have loaded. Until /readyz returns 200 the
+          # main container's startupProbe will fail, blocking traffic.
+          readinessProbe:
+            httpGet:
+              host: 127.0.0.1
+              port: 9999
+              path: /readyz
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+
+      # === Your service container ===
+      containers:
+        - name: payment-service
+          image: example/payment-service:latest
+          env:
+            # The service reads config via the local agent, not directly
+            # from ferra-server. This URL is `localhost` because the agent
+            # shares this Pod's network namespace.
+            - name: FERRA_AGENT_URL
+              value: "http://localhost:9999"
+          ports:
+            - containerPort: 8080
+              name: http
+          # Block the service from receiving traffic until the agent says
+          # its snapshots are loaded. Without this, the service can start
+          # serving requests before config is available and fail/return
+          # defaults inappropriately.
+          startupProbe:
+            httpGet:
+              host: 127.0.0.1
+              port: 9999
+              path: /readyz
+            periodSeconds: 1
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              port: http
+              path: /healthz
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              port: http
+              path: /readyz
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+---
+# Application Service (cluster-internal endpoint for the payment-service).
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: payment
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http

@@ -1,0 +1,99 @@
+# OPTIONAL but STRONGLY RECOMMENDED for production.
+#
+# Ferra has no app-layer authentication — anything that can reach
+# `ferra-server` over the network can read and write every key. In a
+# multi-tenant cluster (most production clusters), that means any pod in
+# any namespace can touch your config plane unless you restrict it.
+#
+# This NetworkPolicy locks `ferra-server` down so only pods in namespaces
+# you explicitly label as `ferra-client: "true"` can reach it. Apply this
+# AFTER `30-ferra-server.yaml`.
+#
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, AWS VPC CNI
+# with policy support, etc.). On EKS you must enable the AWS VPC CNI
+# `enableNetworkPolicy: true` setting (default in newer versions).
+#
+# To allow a consumer namespace through:
+#
+#   kubectl label namespace payment ferra-client=true
+#
+# Sidecars in that namespace can then reach
+# `http://ferra-server.ferra.svc.cluster.local:8080`. Pods in unlabeled
+# namespaces will hit a connection timeout.
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferra-server-ingress
+  namespace: ferra
+spec:
+  podSelector:
+    matchLabels:
+      app: ferra-server
+  policyTypes:
+    - Ingress
+  ingress:
+    # 1. Allow Pods in same namespace (e.g. ferra-postgres if you cared,
+    #    but really this is so kubectl port-forward via the API server
+    #    works — the proxy connections come from kube-system pods).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 8080
+          protocol: TCP
+    # 2. Allow Pods in the ferra namespace itself (e.g. for in-cluster
+    #    debugging, future ferra-agent DaemonSets, etc).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ferra
+      ports:
+        - port: 8080
+          protocol: TCP
+    # 3. Allow Pods in any namespace explicitly labeled `ferra-client=true`.
+    #    This is the per-namespace allowlist; add the label to every
+    #    consumer namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              ferra-client: "true"
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Egress lock for ferra-server: it only needs Postgres + DNS.
+# Comment out the egress block if your CNI doesn't support egress
+# enforcement, or if you'd rather rely on the default "allow all egress."
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ferra-server-egress
+  namespace: ferra
+spec:
+  podSelector:
+    matchLabels:
+      app: ferra-server
+  policyTypes:
+    - Egress
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Postgres (in-cluster). Replace with your managed-Postgres CIDR for
+    # production deployments using RDS/Cloud SQL/etc.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ferra-postgres
+      ports:
+        - port: 5432
+          protocol: TCP

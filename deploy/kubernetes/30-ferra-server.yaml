@@ -1,0 +1,68 @@
+# Ferra server. No app-layer authentication — pods talk to it
+# cluster-internal via the ClusterIP Service below. Do NOT expose this
+# Service via a public LoadBalancer or Ingress without putting auth in
+# front of it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ferra-server
+  namespace: ferra
+data:
+  FERRA_HTTP_ADDR: "0.0.0.0:8080"
+  FERRA_DATABASE_URL: "postgres://postgres:postgres@ferra-postgres.ferra.svc.cluster.local:5432/ferra"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferra-server
+  namespace: ferra
+spec:
+  selector:
+    app: ferra-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferra-server
+  namespace: ferra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ferra-server
+  template:
+    metadata:
+      labels:
+        app: ferra-server
+    spec:
+      containers:
+        - name: ferra-server
+          image: ghcr.io/deatherving/ferra:latest  # build/push your own image
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: ferra-server
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

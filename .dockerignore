@@ -1,0 +1,11 @@
+target/
+**/target/
+.git/
+.github/
+deploy/
+docs/
+.env
+.env.local
+*.md
+!README.md
+**/tests/

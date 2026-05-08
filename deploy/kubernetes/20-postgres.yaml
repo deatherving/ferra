@@ -1,0 +1,65 @@
+# NOT FOR PRODUCTION. Single-instance Postgres for evaluation only.
+# For production, point ferra-server at a managed Postgres instance.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ferra-postgres
+  namespace: ferra
+type: Opaque
+stringData:
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_DB: ferra
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ferra-postgres
+  namespace: ferra
+spec:
+  selector:
+    app: ferra-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ferra-postgres
+  namespace: ferra
+spec:
+  serviceName: ferra-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ferra-postgres
+  template:
+    metadata:
+      labels:
+        app: ferra-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: ferra-postgres
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "ferra"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
