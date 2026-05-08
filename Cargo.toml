@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["server", "agent"]
+members = ["server", "agent", "meta"]
 
 [workspace.package]
 version = "0.0.1"

@@ -1,0 +1,17 @@
+[package]
+name = "ferra"
+description = "Placeholder/redirect crate for Ferra. The real binaries are ferra-server (HTTP + SSE configuration server) and ferra-agent (sidecar with in-memory cache + localhost HTTP API)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["configuration", "config", "kv-store", "ferra", "postgres"]
+categories = ["config"]
+
+[[bin]]
+name = "ferra"
+path = "src/main.rs"
