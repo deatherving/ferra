@@ -3,7 +3,10 @@ resolver = "2"
 members = ["server", "agent", "meta"]
 
 [workspace.package]
-version = "0.0.1"
+# Note: `version` is declared per-crate, not in workspace.package, so each
+# crate can ship independent releases. server / agent / meta evolve at
+# different paces — a bug fix in the server should not force a phantom
+# release of the agent.
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/deatherving/ferra"

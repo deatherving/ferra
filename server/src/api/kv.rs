@@ -14,6 +14,11 @@ use crate::{
     state::SharedState,
 };
 
+/// Postgres advisory-lock id used to serialize all writes. Arbitrary but
+/// stable; matches across restarts. Pick anything not used by other code
+/// sharing the same database (Ferra is single-tenant, so this is fine).
+const WRITE_LOCK_ID: i64 = 0xFE22A;
+
 #[derive(Deserialize)]
 pub struct SetBody {
     pub value: serde_json::Value,
@@ -139,6 +144,16 @@ pub async fn set_key(
     }
 
     let mut tx = state.pool.begin().await?;
+    // Global advisory lock serializes all writes so the bigserial event_id
+    // assigned at INSERT below matches commit order. Without this, two
+    // concurrent writes can produce ids that arrive at watch subscribers
+    // out of order, causing the dedup filter in api/watch.rs to drop the
+    // smaller-id event. Cost: writes lose concurrency; for a config
+    // center this is invisible.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(WRITE_LOCK_ID)
+        .execute(&mut *tx)
+        .await?;
     let event_id: i64 = sqlx::query_scalar(
         "INSERT INTO kv_events (key, operation, value) VALUES ($1, 'set', $2) RETURNING id",
     )
@@ -179,6 +194,11 @@ pub async fn delete_key(
     validate_key(&key)?;
 
     let mut tx = state.pool.begin().await?;
+    // See `set_key` for why this lock is here.
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(WRITE_LOCK_ID)
+        .execute(&mut *tx)
+        .await?;
     let affected = sqlx::query("DELETE FROM kv_configs WHERE key = $1")
         .bind(&key)
         .execute(&mut *tx)
