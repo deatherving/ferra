@@ -67,10 +67,8 @@ async fn run_once(state: &PrefixState, upstream: &UpstreamClient) -> anyhow::Res
         let chunk = chunk?;
         let evs = sse.feed(&chunk);
         for ev in evs {
-            if let Err(e) = handle_event(state, upstream, ev).await {
-                // Surface the error and bail; the outer loop reconnects.
-                return Err(e);
-            }
+            // Any handler error bubbles up so the outer loop reconnects.
+            handle_event(state, upstream, ev).await?;
         }
     }
     Ok(())

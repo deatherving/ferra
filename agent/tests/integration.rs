@@ -107,11 +107,11 @@ async fn watch_handler(
             let mut ev = Event::default();
             for raw in line.split('\n') {
                 if let Some(v) = raw.strip_prefix("event:") {
-                    ev = ev.event(v.trim().to_string());
+                    ev = ev.event(v.trim());
                 } else if let Some(v) = raw.strip_prefix("id:") {
-                    ev = ev.id(v.trim().to_string());
+                    ev = ev.id(v.trim());
                 } else if let Some(v) = raw.strip_prefix("data:") {
-                    ev = ev.data(v.trim().to_string());
+                    ev = ev.data(v.trim());
                 }
             }
             Ok::<_, Infallible>(ev)

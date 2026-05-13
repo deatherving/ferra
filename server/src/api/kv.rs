@@ -72,46 +72,6 @@ fn validate_key(key: &str) -> AppResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validate_key;
-    use crate::error::AppError;
-
-    #[test]
-    fn ok_for_typical_keys() {
-        assert!(validate_key("services/payment/timeout_ms").is_ok());
-        assert!(validate_key("a").is_ok());
-    }
-
-    #[test]
-    fn rejects_empty() {
-        let e = validate_key("").unwrap_err();
-        assert!(matches!(e, AppError::BadRequest(_)));
-        assert!(e.to_string().contains("empty"));
-    }
-
-    #[test]
-    fn rejects_too_long() {
-        let key = "a".repeat(1025);
-        let e = validate_key(&key).unwrap_err();
-        assert!(matches!(e, AppError::BadRequest(_)));
-        assert!(e.to_string().contains("too long"));
-    }
-
-    #[test]
-    fn accepts_max_length() {
-        let key = "a".repeat(1024);
-        assert!(validate_key(&key).is_ok());
-    }
-
-    #[test]
-    fn rejects_nul_byte() {
-        let e = validate_key("foo\0bar").unwrap_err();
-        assert!(matches!(e, AppError::BadRequest(_)));
-        assert!(e.to_string().contains("NUL"));
-    }
-}
-
 pub async fn get_key(
     State(state): State<SharedState>,
     Path(key): Path<String>,
@@ -263,4 +223,44 @@ pub async fn list_prefix(
         latest_event_id: latest_event_id.unwrap_or(0),
         items,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_key;
+    use crate::error::AppError;
+
+    #[test]
+    fn ok_for_typical_keys() {
+        assert!(validate_key("services/payment/timeout_ms").is_ok());
+        assert!(validate_key("a").is_ok());
+    }
+
+    #[test]
+    fn rejects_empty() {
+        let e = validate_key("").unwrap_err();
+        assert!(matches!(e, AppError::BadRequest(_)));
+        assert!(e.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn rejects_too_long() {
+        let key = "a".repeat(1025);
+        let e = validate_key(&key).unwrap_err();
+        assert!(matches!(e, AppError::BadRequest(_)));
+        assert!(e.to_string().contains("too long"));
+    }
+
+    #[test]
+    fn accepts_max_length() {
+        let key = "a".repeat(1024);
+        assert!(validate_key(&key).is_ok());
+    }
+
+    #[test]
+    fn rejects_nul_byte() {
+        let e = validate_key("foo\0bar").unwrap_err();
+        assert!(matches!(e, AppError::BadRequest(_)));
+        assert!(e.to_string().contains("NUL"));
+    }
 }

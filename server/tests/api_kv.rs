@@ -35,7 +35,7 @@ async fn put_then_get_round_trip() {
     assert_eq!(g["key"], "services/payment/timeout_ms");
     assert_eq!(g["value"], json!(3000));
     assert_eq!(g["event_id"], event_id);
-    assert!(g["updated_at"].as_str().unwrap().len() > 0);
+    assert!(!g["updated_at"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]

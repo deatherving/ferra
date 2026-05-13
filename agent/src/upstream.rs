@@ -61,7 +61,7 @@ impl UpstreamClient {
             let body = resp.text().await.unwrap_or_default();
             return Err(anyhow!("snapshot failed: HTTP {status}: {body}"));
         }
-        Ok(resp.json().await.context("decode snapshot response")?)
+        resp.json().await.context("decode snapshot response")
     }
 
     /// `GET /v1/kv/{key}` — returns `None` on 404 (key was deleted between

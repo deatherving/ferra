@@ -1,9 +1,9 @@
 //! Placeholder binary for the `ferra` crate name.
 //!
 //! Ferra is split into two real crates:
-//!   - `ferra-server`: the HTTP + SSE configuration server
-//!   - `ferra-agent`:  the sidecar that holds an in-memory cache and exposes
-//!                     a localhost HTTP API to nearby service containers
+//! - `ferra-server`: the HTTP + SSE configuration server
+//! - `ferra-agent`: the sidecar that holds an in-memory cache and exposes
+//!   a localhost HTTP API to nearby service containers
 //!
 //! This binary just prints redirection instructions and exits.
 
