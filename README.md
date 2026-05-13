@@ -110,12 +110,8 @@ Full walkthrough: [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md).
 kubectl apply -f deploy/kubernetes/00-namespace.yaml
 kubectl apply -f deploy/kubernetes/20-postgres.yaml      # eval only; use managed pg in prod
 kubectl apply -f deploy/kubernetes/30-ferra-server.yaml
-kubectl apply -f deploy/kubernetes/35-network-policy.yaml
 
 kubectl rollout status -n ferra deployment/ferra-server
-
-# label each consumer namespace so the NetworkPolicy lets it through
-kubectl label namespace payment ferra-client=true
 ```
 
 For each consumer service, copy
@@ -180,11 +176,19 @@ FERRA_DATABASE_IAM_AUTH_ENABLED=true
 FERRA_DATABASE_HOST=ferra-prod.cluster-xyz.us-west-2.rds.amazonaws.com
 FERRA_DATABASE_NAME=ferra
 FERRA_DATABASE_USER=ferra_iam         # DB user granted `rds_iam` role
-FERRA_DATABASE_SSL_MODE=require       # IAM forbids `disable`
 FERRA_DATABASE_AWS_REGION=us-west-2
+FERRA_DATABASE_SSL_ROOT_CERT=/etc/rds-ca/global-bundle.pem
 # AWS credentials picked up automatically from the SDK chain
 # (IRSA / EC2 instance profile / ECS task role / AWS_* env / ~/.aws/credentials).
 ```
+
+In IAM mode `FERRA_DATABASE_SSL_MODE` defaults to `verify-full` (override
+with the env var if you genuinely need to weaken it). `verify-full`
+requires `FERRA_DATABASE_SSL_ROOT_CERT` pointing at the AWS RDS CA bundle
+(download from
+[`truststore.pki.rds.amazonaws.com/global/global-bundle.pem`](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem));
+see [`deploy/kubernetes/README.md`](deploy/kubernetes/README.md) for the
+ConfigMap pattern.
 
 How the refresh keeps connections valid past the 15-minute TTL: every
 14 minutes the server regenerates the token, builds new
@@ -204,7 +208,8 @@ logged and retried; the pool is never closed.
 | `FERRA_DATABASE_NAME`                             | _(none)_           | Required in discrete/IAM modes.                        |
 | `FERRA_DATABASE_USER`                             | _(none)_           | Required in discrete/IAM modes.                        |
 | `FERRA_DATABASE_PASSWORD`                         | _(none)_           | Required in discrete (non-IAM) mode.                   |
-| `FERRA_DATABASE_SSL_MODE`                         | `prefer`           | `disable` / `allow` / `prefer` / `require` / `verify-ca` / `verify-full`. IAM forbids `disable`. |
+| `FERRA_DATABASE_SSL_MODE`                         | `prefer` (URL/discrete), `verify-full` (IAM) | `disable` / `allow` / `prefer` / `require` / `verify-ca` / `verify-full`. IAM forbids `disable`. |
+| `FERRA_DATABASE_SSL_ROOT_CERT`                    | _(none)_           | Path to PEM CA bundle for `verify-ca` / `verify-full`. Required for RDS/Aurora `verify-full`. |
 | `FERRA_DATABASE_IAM_AUTH_ENABLED`                 | `false`            | Set to `true` for RDS IAM auth.                        |
 | `FERRA_DATABASE_AWS_REGION`                       | _(none)_           | Required when IAM auth is enabled.                     |
 | `FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS`  | `840` (14 min)     | Must be `< 900` (token TTL is 15 min).                 |

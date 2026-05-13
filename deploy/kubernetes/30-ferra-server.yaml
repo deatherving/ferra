@@ -20,11 +20,15 @@
 #        FERRA_DATABASE_HOST=<rds-endpoint>
 #        FERRA_DATABASE_NAME=ferra
 #        FERRA_DATABASE_USER=ferra_iam          (rds_iam role granted in the DB)
-#        FERRA_DATABASE_SSL_MODE=require
 #        FERRA_DATABASE_AWS_REGION=us-west-2
-#      AWS credentials come from the standard SDK chain — typically IRSA
-#      on EKS. Bind a ServiceAccount with an IAM role that has
-#      rds-db:connect permission for the resource arn of the DB user.
+#        FERRA_DATABASE_SSL_ROOT_CERT=/etc/rds-ca/global-bundle.pem
+#      In IAM mode the SSL mode defaults to verify-full (override with
+#      FERRA_DATABASE_SSL_MODE if needed). Mount the AWS RDS CA bundle and
+#      point FERRA_DATABASE_SSL_ROOT_CERT at it — see the repo's
+#      deploy/kubernetes/README.md for the ConfigMap pattern. AWS
+#      credentials come from the standard SDK chain — typically IRSA on
+#      EKS. Bind a ServiceAccount with an IAM role that has rds-db:connect
+#      permission for the resource arn of the DB user.
 apiVersion: v1
 kind: ConfigMap
 metadata:

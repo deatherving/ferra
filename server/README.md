@@ -50,13 +50,21 @@ export FERRA_DATABASE_IAM_AUTH_ENABLED=true
 export FERRA_DATABASE_HOST=ferra-prod.cluster-xyz.us-west-2.rds.amazonaws.com
 export FERRA_DATABASE_NAME=ferra
 export FERRA_DATABASE_USER=ferra_iam         # DB user with rds_iam role
-export FERRA_DATABASE_SSL_MODE=require       # RDS IAM requires TLS
 export FERRA_DATABASE_AWS_REGION=us-west-2
+export FERRA_DATABASE_SSL_ROOT_CERT=/etc/rds-ca/global-bundle.pem
 # Optional: tighten or loosen the refresh cadence (default 840s = 14min,
 # must be < 900s since IAM tokens expire at 15 minutes):
 # export FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS=600
 ferra-server
 ```
+
+In IAM mode `FERRA_DATABASE_SSL_MODE` defaults to `verify-full` (override
+with the env var if you have a specific reason). For `verify-full` against
+an RDS / Aurora endpoint, you must mount the AWS RDS CA bundle and point
+`FERRA_DATABASE_SSL_ROOT_CERT` at it — download from
+<https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem>.
+Without the bundle, sqlx falls back to the system trust store, which
+does not contain the AWS RDS CA, so connections will fail.
 
 AWS credentials are picked up automatically by the SDK from the usual
 chain: IRSA / EC2 instance profile / ECS task role / `AWS_*` env vars /
@@ -83,7 +91,8 @@ closed.
 | `FERRA_DATABASE_NAME` | _(none)_ | Required in discrete/IAM modes. |
 | `FERRA_DATABASE_USER` | _(none)_ | Required in discrete/IAM modes. |
 | `FERRA_DATABASE_PASSWORD` | _(none)_ | Required in discrete (non-IAM) mode. |
-| `FERRA_DATABASE_SSL_MODE` | `prefer` | `disable` / `allow` / `prefer` / `require` / `verify-ca` / `verify-full`. IAM mode forbids `disable`. |
+| `FERRA_DATABASE_SSL_MODE` | `prefer` (URL/discrete), `verify-full` (IAM) | `disable` / `allow` / `prefer` / `require` / `verify-ca` / `verify-full`. IAM forbids `disable`. |
+| `FERRA_DATABASE_SSL_ROOT_CERT` | _(none)_ | Path to PEM CA bundle for `verify-ca` / `verify-full`. Required for RDS / Aurora with `verify-full` (the AWS CA isn't in the system trust store). |
 | `FERRA_DATABASE_IAM_AUTH_ENABLED` | `false` | Set to `true` to enable RDS IAM auth. |
 | `FERRA_DATABASE_AWS_REGION` | _(none)_ | Required when IAM auth is enabled. |
 | `FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS` | `840` (14 min) | Must be `< 900` (token TTL is 15 minutes). |

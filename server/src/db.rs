@@ -26,13 +26,17 @@ async fn connect_url(url: &str) -> anyhow::Result<PgPool> {
 }
 
 fn discrete_options(d: &DiscreteDatabase) -> PgConnectOptions {
-    PgConnectOptions::new()
+    let mut opts = PgConnectOptions::new()
         .host(&d.host)
         .port(d.port)
         .database(&d.name)
         .username(&d.user)
         .password(&d.password)
-        .ssl_mode(d.ssl_mode)
+        .ssl_mode(d.ssl_mode);
+    if let Some(ca) = d.ssl_root_cert.as_ref() {
+        opts = opts.ssl_root_cert(ca);
+    }
+    opts
 }
 
 async fn connect_discrete(d: &DiscreteDatabase) -> anyhow::Result<PgPool> {
@@ -113,13 +117,17 @@ async fn build_iam_options(
         .await
         .map_err(|e| anyhow::anyhow!("mint RDS auth token: {e}"))?;
 
-    Ok(PgConnectOptions::new()
+    let mut opts = PgConnectOptions::new()
         .host(&cfg.host)
         .port(cfg.port)
         .database(&cfg.name)
         .username(&cfg.user)
         .password(token.as_str())
-        .ssl_mode(cfg.ssl_mode))
+        .ssl_mode(cfg.ssl_mode);
+    if let Some(ca) = cfg.ssl_root_cert.as_ref() {
+        opts = opts.ssl_root_cert(ca);
+    }
+    Ok(opts)
 }
 
 async fn run_token_refresher(

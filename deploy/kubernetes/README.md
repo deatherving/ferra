@@ -1,7 +1,6 @@
 # Ferra on Kubernetes
 
-End-to-end deployment example: server + Postgres + sidecar consumer template
-+ NetworkPolicy lockdown.
+End-to-end deployment example: server + Postgres + sidecar consumer template.
 
 ## Files
 
@@ -10,29 +9,27 @@ End-to-end deployment example: server + Postgres + sidecar consumer template
 | `00-namespace.yaml` | Creates the `ferra` namespace |
 | `20-postgres.yaml` | Single-replica Postgres, **for evaluation only** — use managed Postgres in prod |
 | `30-ferra-server.yaml` | The Ferra server Deployment + ClusterIP Service |
-| `35-network-policy.yaml` | Restricts ingress to namespaces labeled `ferra-client=true` |
 | `40-example-consumer-with-sidecar.yaml` | Template for a consumer Pod with `ferra-agent` sidecar |
 
 ## Deploy
 
 ```bash
 # Build + push images (replace registry as needed)
-docker build -t ghcr.io/deatherving/ferra:0.1.0       -f Dockerfile       .
-docker build -t ghcr.io/deatherving/ferra-agent:0.1.0 -f Dockerfile.agent .
-docker push ghcr.io/deatherving/ferra:0.1.0
-docker push ghcr.io/deatherving/ferra-agent:0.1.0
+docker build -t ghcr.io/deatherving/ferra:0.1.1       -f Dockerfile       .
+docker build -t ghcr.io/deatherving/ferra-agent:0.0.1 -f Dockerfile.agent .
+docker push ghcr.io/deatherving/ferra:0.1.1
+docker push ghcr.io/deatherving/ferra-agent:0.0.1
+
+# On macOS (ARM) targeting EKS amd64 nodes, use buildx:
+# docker buildx build --platform linux/amd64 \
+#   -t ghcr.io/deatherving/ferra:0.1.1 -f Dockerfile --push .
 
 # Apply
 kubectl apply -f deploy/kubernetes/00-namespace.yaml
 kubectl apply -f deploy/kubernetes/20-postgres.yaml         # eval only
 kubectl apply -f deploy/kubernetes/30-ferra-server.yaml
-kubectl apply -f deploy/kubernetes/35-network-policy.yaml
 
 kubectl rollout status -n ferra deployment/ferra-server
-
-# For each consumer namespace, allow it through the NetworkPolicy:
-kubectl label namespace payment   ferra-client=true
-kubectl label namespace matching  ferra-client=true
 ```
 
 ## Smoke test from your laptop
@@ -85,22 +82,76 @@ kubectl exec -n payment deploy/payment-service -c payment-service -- \
 - **For AWS RDS / Aurora, prefer IAM authentication.** Set
   `FERRA_DATABASE_IAM_AUTH_ENABLED=true`, `FERRA_DATABASE_HOST`,
   `FERRA_DATABASE_NAME`, `FERRA_DATABASE_USER` (granted the `rds_iam`
-  role), `FERRA_DATABASE_SSL_MODE=require`, and `FERRA_DATABASE_AWS_REGION`.
-  Bind the pod's ServiceAccount to an IAM role via IRSA; the role needs
-  `rds-db:connect` permission for the user. The server mints a 15-min
-  auth token and refreshes it every 14 minutes via
+  role), and `FERRA_DATABASE_AWS_REGION`. SSL mode defaults to
+  `verify-full` automatically in IAM mode — mount the AWS RDS CA bundle
+  and point `FERRA_DATABASE_SSL_ROOT_CERT` at it (see "AWS RDS CA bundle"
+  below). Bind the pod's ServiceAccount to an IAM role via IRSA; the
+  role needs `rds-db:connect` permission for the user. The server mints
+  a 15-min auth token and refreshes it every 14 minutes via
   `PgPool::set_connect_options`, so the SQLx pool always has a fresh
   token for new physical connections. No password lives in K8s.
-- **Apply `35-network-policy.yaml`.** Without it, any pod in any namespace
-  can reach `ferra-server` and read or rewrite your config. Requires a CNI
-  that enforces NetworkPolicy (Calico, Cilium, or AWS VPC CNI with
-  `enableNetworkPolicy: true`).
-- **Pin image tags.** Use `:0.1.0`, not `:latest`.
+- **Pin image tags.** Use `:0.1.1`, not `:latest`.
 - **Don't scale `ferra-server` past 1 replica.** The SSE fan-out is
   per-process (a `tokio::sync::broadcast` channel), so writes to one
   replica don't propagate live to subscribers on another. Watchers would
   only catch up via the `kv_events` table on reconnect, with delay or
   potential gaps. Keep `replicas: 1` until cross-instance fan-out lands.
+- **No NetworkPolicy is shipped.** The repo previously included a
+  template; it was removed because not every cluster has a CNI that
+  enforces NetworkPolicy, and shipping one as a default created false
+  confidence. If your cluster supports it, restrict ingress to
+  `ferra-server`'s pod selector to the namespaces / pods that actually
+  consume Ferra — but write it for your environment, not against a
+  generic template.
+
+## AWS RDS CA bundle
+
+For `verify-full` against an RDS or Aurora endpoint, sqlx-postgres needs
+the AWS-issued CA chain. It is NOT in the system trust store, so the
+server has to be told where to find it.
+
+```bash
+# Download once and bake into your image, or mount as a ConfigMap/Secret.
+curl -o global-bundle.pem \
+  https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+```
+
+In K8s, the simplest pattern is a ConfigMap mounted into the
+`ferra-server` Pod:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rds-ca-bundle
+  namespace: ferra
+binaryData:
+  global-bundle.pem: |
+    <base64-encoded contents of global-bundle.pem>
+---
+# In the ferra-server Deployment:
+spec:
+  template:
+    spec:
+      containers:
+        - name: ferra-server
+          env:
+            - name: FERRA_DATABASE_SSL_ROOT_CERT
+              value: /etc/rds-ca/global-bundle.pem
+          volumeMounts:
+            - name: rds-ca
+              mountPath: /etc/rds-ca
+              readOnly: true
+      volumes:
+        - name: rds-ca
+          configMap:
+            name: rds-ca-bundle
+```
+
+If `FERRA_DATABASE_SSL_MODE=verify-ca` / `verify-full` is set but
+`FERRA_DATABASE_SSL_ROOT_CERT` is not, the server logs a warning at
+startup and falls back to the system trust store. For RDS / Aurora that
+fallback typically fails — set the env var.
 
 ## IRSA setup for RDS IAM auth (EKS specific)
 

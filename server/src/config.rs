@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use sqlx::postgres::PgSslMode;
@@ -32,6 +33,12 @@ pub struct DiscreteDatabase {
     pub user: String,
     pub password: String,
     pub ssl_mode: PgSslMode,
+    /// Optional path to a PEM-encoded CA bundle. Required for
+    /// `ssl_mode = verify-ca | verify-full` when the server cert chains
+    /// to a non-system CA — e.g. the AWS RDS global CA bundle, which is
+    /// not in the system trust store. Parsed from
+    /// `FERRA_DATABASE_SSL_ROOT_CERT`.
+    pub ssl_root_cert: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +48,10 @@ pub struct IamDatabase {
     pub name: String,
     pub user: String,
     pub ssl_mode: PgSslMode,
+    /// See `DiscreteDatabase::ssl_root_cert`. For RDS/Aurora with
+    /// `verify-full`, point this at the bundle from
+    /// <https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem>.
+    pub ssl_root_cert: Option<PathBuf>,
     pub aws_region: String,
     /// How often to regenerate the RDS auth token and apply it via
     /// `PgPool::set_connect_options`. Defaults to 14 minutes, which sits
@@ -92,12 +103,21 @@ fn parse_database_config() -> anyhow::Result<DatabaseConfig> {
         let port = parse_port_env()?;
         let name = required_env("FERRA_DATABASE_NAME")?;
         let user = required_env("FERRA_DATABASE_USER")?;
-        let ssl_mode = parse_ssl_mode_env()?;
+        // IAM mode defaults to verify-full — IAM implies you're talking to a
+        // real AWS RDS/Aurora endpoint, and that endpoint should have its
+        // hostname verified against the AWS CA. Anyone who needs to weaken
+        // this (e.g. self-signed proxy in front of RDS) sets
+        // FERRA_DATABASE_SSL_MODE explicitly.
+        let ssl_mode = match std::env::var("FERRA_DATABASE_SSL_MODE") {
+            Ok(v) if !v.trim().is_empty() => parse_ssl_mode_env()?,
+            _ => PgSslMode::VerifyFull,
+        };
         if matches!(ssl_mode, PgSslMode::Disable) {
             anyhow::bail!(
                 "FERRA_DATABASE_SSL_MODE=disable is incompatible with IAM auth (RDS requires TLS)",
             );
         }
+        let ssl_root_cert = parse_ssl_root_cert_env(ssl_mode)?;
         let aws_region = required_env("FERRA_DATABASE_AWS_REGION")?;
         let refresh_secs = std::env::var("FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS")
             .ok()
@@ -122,6 +142,7 @@ fn parse_database_config() -> anyhow::Result<DatabaseConfig> {
             name,
             user,
             ssl_mode,
+            ssl_root_cert,
             aws_region,
             token_refresh_interval: Duration::from_secs(refresh_secs),
         }));
@@ -144,6 +165,7 @@ fn parse_database_config() -> anyhow::Result<DatabaseConfig> {
     let user = required_env("FERRA_DATABASE_USER")?;
     let password = required_env("FERRA_DATABASE_PASSWORD")?;
     let ssl_mode = parse_ssl_mode_env()?;
+    let ssl_root_cert = parse_ssl_root_cert_env(ssl_mode)?;
     Ok(DatabaseConfig::Discrete(DiscreteDatabase {
         host,
         port,
@@ -151,7 +173,33 @@ fn parse_database_config() -> anyhow::Result<DatabaseConfig> {
         user,
         password,
         ssl_mode,
+        ssl_root_cert,
     }))
+}
+
+fn parse_ssl_root_cert_env(ssl_mode: PgSslMode) -> anyhow::Result<Option<PathBuf>> {
+    let raw = std::env::var("FERRA_DATABASE_SSL_ROOT_CERT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let path = raw.map(PathBuf::from);
+
+    // verify-ca and verify-full need a CA bundle the cert chains to. The
+    // system trust store sometimes works (e.g. for Cloud SQL which uses
+    // public CAs) but for RDS/Aurora it won't — the AWS RDS CA isn't in
+    // the system store. Loudly warn if the user picked a verifying mode
+    // without giving us a bundle; sqlx will fall back to the system store
+    // and may or may not work.
+    if path.is_none() && matches!(ssl_mode, PgSslMode::VerifyCa | PgSslMode::VerifyFull) {
+        tracing::warn!(
+            "FERRA_DATABASE_SSL_MODE is verify-ca/verify-full but \
+             FERRA_DATABASE_SSL_ROOT_CERT is unset; sqlx will use the \
+             system trust store. For AWS RDS/Aurora this typically fails — \
+             download the RDS global CA bundle and point this env var at it.",
+        );
+    }
+
+    Ok(path)
 }
 
 fn required_env(key: &str) -> anyhow::Result<String> {
@@ -217,6 +265,7 @@ mod tests {
         "FERRA_DATABASE_USER",
         "FERRA_DATABASE_PASSWORD",
         "FERRA_DATABASE_SSL_MODE",
+        "FERRA_DATABASE_SSL_ROOT_CERT",
         "FERRA_DATABASE_IAM_AUTH_ENABLED",
         "FERRA_DATABASE_AWS_REGION",
         "FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS",
@@ -326,6 +375,33 @@ mod tests {
                 assert_eq!(d.user, "ferra_user");
                 assert_eq!(d.password, "s3cret");
                 assert!(matches!(d.ssl_mode, PgSslMode::Require));
+                assert!(d.ssl_root_cert.is_none());
+            }
+            other => panic!("expected discrete mode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn ssl_root_cert_env_var_is_picked_up_in_discrete_mode() {
+        clear();
+        set("FERRA_DATABASE_HOST", "db.example.com");
+        set("FERRA_DATABASE_NAME", "ferra");
+        set("FERRA_DATABASE_USER", "u");
+        set("FERRA_DATABASE_PASSWORD", "p");
+        set("FERRA_DATABASE_SSL_MODE", "verify-full");
+        set(
+            "FERRA_DATABASE_SSL_ROOT_CERT",
+            "/etc/rds-ca/global-bundle.pem",
+        );
+        let cfg = Config::from_env().unwrap();
+        match cfg.database {
+            DatabaseConfig::Discrete(d) => {
+                assert!(matches!(d.ssl_mode, PgSslMode::VerifyFull));
+                assert_eq!(
+                    d.ssl_root_cert.as_deref().and_then(|p| p.to_str()),
+                    Some("/etc/rds-ca/global-bundle.pem"),
+                );
             }
             other => panic!("expected discrete mode, got {other:?}"),
         }
@@ -351,7 +427,10 @@ mod tests {
                 assert_eq!(i.name, "ferra");
                 assert_eq!(i.user, "ferra_iam");
                 assert_eq!(i.aws_region, "us-west-2");
-                assert!(matches!(i.ssl_mode, PgSslMode::Prefer));
+                // IAM defaults to verify-full for safety against MITM on the
+                // path to AWS RDS / Aurora endpoints.
+                assert!(matches!(i.ssl_mode, PgSslMode::VerifyFull));
+                assert!(i.ssl_root_cert.is_none());
                 assert_eq!(i.token_refresh_interval, Duration::from_secs(14 * 60));
             }
             other => panic!("expected iam mode, got {other:?}"),
@@ -370,6 +449,23 @@ mod tests {
         set("FERRA_DATABASE_AWS_REGION", "us-west-2");
         let err = Config::from_env().unwrap_err();
         assert!(err.to_string().contains("mutually exclusive"));
+    }
+
+    #[test]
+    #[serial]
+    fn iam_mode_honors_explicit_ssl_mode_override() {
+        clear();
+        set("FERRA_DATABASE_IAM_AUTH_ENABLED", "true");
+        set("FERRA_DATABASE_HOST", "h");
+        set("FERRA_DATABASE_NAME", "n");
+        set("FERRA_DATABASE_USER", "u");
+        set("FERRA_DATABASE_AWS_REGION", "us-west-2");
+        set("FERRA_DATABASE_SSL_MODE", "require");
+        let cfg = Config::from_env().unwrap();
+        match cfg.database {
+            DatabaseConfig::Iam(i) => assert!(matches!(i.ssl_mode, PgSslMode::Require)),
+            other => panic!("expected iam mode, got {other:?}"),
+        }
     }
 
     #[test]
