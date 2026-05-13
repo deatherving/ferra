@@ -2,6 +2,29 @@
 # cluster-internal via the ClusterIP Service below. Do NOT expose this
 # Service via a public LoadBalancer or Ingress without putting auth in
 # front of it.
+#
+# Three Postgres connection modes are supported via env vars (pick one):
+#
+#   1. URL mode (this example below):
+#        FERRA_DATABASE_URL=postgres://user:pass@host:5432/db
+#
+#   2. Discrete-fields mode (no URL):
+#        FERRA_DATABASE_HOST=db.example.com
+#        FERRA_DATABASE_NAME=ferra
+#        FERRA_DATABASE_USER=ferra_user
+#        FERRA_DATABASE_PASSWORD=...           (use a Secret, not this ConfigMap)
+#        FERRA_DATABASE_SSL_MODE=require
+#
+#   3. AWS RDS / Aurora IAM authentication (no password):
+#        FERRA_DATABASE_IAM_AUTH_ENABLED=true
+#        FERRA_DATABASE_HOST=<rds-endpoint>
+#        FERRA_DATABASE_NAME=ferra
+#        FERRA_DATABASE_USER=ferra_iam          (rds_iam role granted in the DB)
+#        FERRA_DATABASE_SSL_MODE=require
+#        FERRA_DATABASE_AWS_REGION=us-west-2
+#      AWS credentials come from the standard SDK chain — typically IRSA
+#      on EKS. Bind a ServiceAccount with an IAM role that has
+#      rds-db:connect permission for the resource arn of the DB user.
 apiVersion: v1
 kind: ConfigMap
 metadata:

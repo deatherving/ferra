@@ -79,8 +79,18 @@ kubectl exec -n payment deploy/payment-service -c payment-service -- \
 ## Production notes
 
 - **Use managed Postgres.** Skip `20-postgres.yaml` and point
-  `FERRA_DATABASE_URL` in `30-ferra-server.yaml`'s ConfigMap at RDS / Cloud
-  SQL / Aiven / etc.
+  `FERRA_DATABASE_URL` (or the discrete `FERRA_DATABASE_HOST/NAME/USER/...`
+  fields) in `30-ferra-server.yaml`'s ConfigMap at RDS / Cloud SQL /
+  Aiven / etc. Move passwords into a `Secret`, never a `ConfigMap`.
+- **For AWS RDS / Aurora, prefer IAM authentication.** Set
+  `FERRA_DATABASE_IAM_AUTH_ENABLED=true`, `FERRA_DATABASE_HOST`,
+  `FERRA_DATABASE_NAME`, `FERRA_DATABASE_USER` (granted the `rds_iam`
+  role), `FERRA_DATABASE_SSL_MODE=require`, and `FERRA_DATABASE_AWS_REGION`.
+  Bind the pod's ServiceAccount to an IAM role via IRSA; the role needs
+  `rds-db:connect` permission for the user. The server mints a 15-min
+  auth token and refreshes it every 14 minutes via
+  `PgPool::set_connect_options`, so the SQLx pool always has a fresh
+  token for new physical connections. No password lives in K8s.
 - **Apply `35-network-policy.yaml`.** Without it, any pod in any namespace
   can reach `ferra-server` and read or rewrite your config. Requires a CNI
   that enforces NetworkPolicy (Calico, Cilium, or AWS VPC CNI with
@@ -91,3 +101,58 @@ kubectl exec -n payment deploy/payment-service -c payment-service -- \
   replica don't propagate live to subscribers on another. Watchers would
   only catch up via the `kv_events` table on reconnect, with delay or
   potential gaps. Keep `replicas: 1` until cross-instance fan-out lands.
+
+## IRSA setup for RDS IAM auth (EKS specific)
+
+When using IAM mode on EKS, the `ferra-server` pod needs an AWS-side
+identity that's allowed to call `rds-db:connect`. The standard pattern
+is IRSA — IAM Roles for Service Accounts.
+
+Sketch (one-time, per cluster):
+
+```bash
+# 1. Create an IAM policy that grants rds-db:connect for the IAM DB user
+cat > /tmp/ferra-rds-iam.json <<'POLICY'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "rds-db:connect",
+    "Resource": "arn:aws:rds-db:us-west-2:123456789012:dbuser:cluster-XXXXX/ferra_iam"
+  }]
+}
+POLICY
+aws iam create-policy --policy-name ferra-rds-iam --policy-document file:///tmp/ferra-rds-iam.json
+
+# 2. Create the IAM role with a trust policy for the cluster's OIDC provider,
+#    attached to the policy above. (eksctl makes this one command:)
+eksctl create iamserviceaccount \
+  --cluster my-cluster \
+  --namespace ferra \
+  --name ferra-server \
+  --attach-policy-arn arn:aws:iam::123456789012:policy/ferra-rds-iam \
+  --approve
+```
+
+Then reference the ServiceAccount in `30-ferra-server.yaml`'s pod spec:
+
+```yaml
+spec:
+  template:
+    spec:
+      serviceAccountName: ferra-server      # ← created by eksctl above
+      containers:
+        - name: ferra-server
+          ...
+```
+
+Inside the DB, grant the role to the IAM user (one-time, run as superuser):
+
+```sql
+CREATE USER ferra_iam;
+GRANT rds_iam TO ferra_iam;
+GRANT ALL ON DATABASE ferra TO ferra_iam;
+```
+
+That's the only one-time setup. Token refresh is fully automatic on
+the server side after that.

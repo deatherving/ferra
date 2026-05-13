@@ -150,12 +150,67 @@ and the implementation requirements for custom clients — is in
 
 ## Server configuration
 
-| Variable                        | Default            | Purpose                              |
-|---------------------------------|--------------------|--------------------------------------|
-| `FERRA_DATABASE_URL`            | _required_         | Postgres connection string           |
-| `FERRA_HTTP_ADDR`               | `0.0.0.0:8080`     | HTTP listen address                  |
-| `FERRA_MAX_VALUE_BYTES`         | `262144` (256 KiB) | Max serialized value size            |
-| `FERRA_WATCH_HEARTBEAT_SECONDS` | `30`               | SSE heartbeat interval               |
+Three Postgres connection modes are supported — pick one.
+
+### URL mode (simplest, backwards-compatible)
+
+```bash
+FERRA_DATABASE_URL=postgres://user:pass@host:5432/ferra
+```
+
+### Discrete-fields mode
+
+```bash
+FERRA_DATABASE_HOST=db.example.com
+FERRA_DATABASE_NAME=ferra
+FERRA_DATABASE_USER=ferra_user
+FERRA_DATABASE_PASSWORD=s3cret
+FERRA_DATABASE_SSL_MODE=require       # optional, default `prefer`
+```
+
+### AWS RDS / Aurora IAM authentication
+
+For RDS or Aurora PostgreSQL with IAM database authentication enabled.
+The server mints a 15-minute auth token via the AWS SDK and refreshes it
+in the background (default every 14 min) so the SQLx pool always has a
+valid token when it needs to open new physical connections.
+
+```bash
+FERRA_DATABASE_IAM_AUTH_ENABLED=true
+FERRA_DATABASE_HOST=ferra-prod.cluster-xyz.us-west-2.rds.amazonaws.com
+FERRA_DATABASE_NAME=ferra
+FERRA_DATABASE_USER=ferra_iam         # DB user granted `rds_iam` role
+FERRA_DATABASE_SSL_MODE=require       # IAM forbids `disable`
+FERRA_DATABASE_AWS_REGION=us-west-2
+# AWS credentials picked up automatically from the SDK chain
+# (IRSA / EC2 instance profile / ECS task role / AWS_* env / ~/.aws/credentials).
+```
+
+How the refresh keeps connections valid past the 15-minute TTL: every
+14 minutes the server regenerates the token, builds new
+`PgConnectOptions`, and calls `PgPool::set_connect_options`. That affects
+**future** physical connections only — existing ones finish what
+they're doing with their original token, and the pool's `max_lifetime`
+(10 min in IAM mode) rotates them out naturally. Refresh failures are
+logged and retried; the pool is never closed.
+
+### All env vars
+
+| Variable                                          | Default            | Purpose                                                |
+|---------------------------------------------------|--------------------|--------------------------------------------------------|
+| `FERRA_DATABASE_URL`                              | _(none)_           | Postgres URL. Mutually exclusive with IAM mode.        |
+| `FERRA_DATABASE_HOST`                             | _(none)_           | Required in discrete/IAM modes.                        |
+| `FERRA_DATABASE_PORT`                             | `5432`             |                                                        |
+| `FERRA_DATABASE_NAME`                             | _(none)_           | Required in discrete/IAM modes.                        |
+| `FERRA_DATABASE_USER`                             | _(none)_           | Required in discrete/IAM modes.                        |
+| `FERRA_DATABASE_PASSWORD`                         | _(none)_           | Required in discrete (non-IAM) mode.                   |
+| `FERRA_DATABASE_SSL_MODE`                         | `prefer`           | `disable` / `allow` / `prefer` / `require` / `verify-ca` / `verify-full`. IAM forbids `disable`. |
+| `FERRA_DATABASE_IAM_AUTH_ENABLED`                 | `false`            | Set to `true` for RDS IAM auth.                        |
+| `FERRA_DATABASE_AWS_REGION`                       | _(none)_           | Required when IAM auth is enabled.                     |
+| `FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS`  | `840` (14 min)     | Must be `< 900` (token TTL is 15 min).                 |
+| `FERRA_HTTP_ADDR`                                 | `0.0.0.0:8080`     | HTTP listen address.                                   |
+| `FERRA_MAX_VALUE_BYTES`                           | `262144` (256 KiB) | Max serialized value size.                             |
+| `FERRA_WATCH_HEARTBEAT_SECONDS`                   | `30`               | SSE heartbeat interval.                                |
 
 ## Environments
 
