@@ -11,14 +11,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferra_server::{api, config::Config, db, state::AppState};
+use ferra_server::{
+    api,
+    config::{Config, DatabaseConfig},
+    db,
+    state::AppState,
+};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
-use testcontainers_modules::{
-    postgres::Postgres as PgImage,
-    testcontainers::runners::AsyncRunner,
-};
+use testcontainers_modules::{postgres::Postgres as PgImage, testcontainers::runners::AsyncRunner};
 use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
 
@@ -44,7 +46,9 @@ async fn shared() -> &'static SharedPg {
 
             // Run migrations once via a setup pool. Goes through `db::connect`
             // so that public DB-layer code is exercised by the integration suite.
-            let setup_pool = db::connect(&url).await.expect("db::connect for setup");
+            let setup_pool = db::connect(&DatabaseConfig::Url(url.clone()))
+                .await
+                .expect("db::connect for setup");
             db::migrate(&setup_pool).await.expect("run migrations");
             setup_pool.close().await;
 
@@ -116,7 +120,7 @@ pub async fn start_with(opts: StartOptions) -> TestServer {
     let pool = fresh_pool().await;
 
     let cfg = Config {
-        database_url: "ignored-by-tests".into(),
+        database: DatabaseConfig::Url("ignored-by-tests".into()),
         http_addr: "127.0.0.1:0".into(),
         max_value_bytes: opts.max_value_bytes,
         watch_heartbeat: opts.heartbeat,

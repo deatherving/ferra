@@ -59,7 +59,10 @@ impl SseParser {
                 continue;
             }
             let (field, value) = match line.find(':') {
-                Some(i) => (&line[..i], line[i + 1..].strip_prefix(' ').unwrap_or(&line[i + 1..])),
+                Some(i) => (
+                    &line[..i],
+                    line[i + 1..].strip_prefix(' ').unwrap_or(&line[i + 1..]),
+                ),
                 None => (line, ""),
             };
             match field {

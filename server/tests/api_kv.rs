@@ -84,20 +84,12 @@ async fn delete_missing_returns_404() {
 async fn delete_existing_removes_and_returns_event_id() {
     let s = common::start().await;
     let _ = put(&s, "doomed", json!(1)).await;
-    let r = s
-        .req(Method::DELETE, "/v1/kv/doomed")
-        .send()
-        .await
-        .unwrap();
+    let r = s.req(Method::DELETE, "/v1/kv/doomed").send().await.unwrap();
     assert!(r.status().is_success());
     let body: Value = r.json().await.unwrap();
     assert_eq!(body["operation"], "delete");
 
-    let r2 = s
-        .req(Method::GET, "/v1/kv/doomed")
-        .send()
-        .await
-        .unwrap();
+    let r2 = s.req(Method::GET, "/v1/kv/doomed").send().await.unwrap();
     assert_eq!(r2.status().as_u16(), 404);
 }
 

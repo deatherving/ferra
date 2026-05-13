@@ -74,7 +74,8 @@ impl PrefixState {
         }
         // Snapshot resets the cursor, even if downward (the server told us
         // older event_ids are no longer valid).
-        self.latest_event_id.store(latest_event_id, Ordering::Relaxed);
+        self.latest_event_id
+            .store(latest_event_id, Ordering::Relaxed);
         self.ready.store(true, Ordering::Relaxed);
         let _ = self.notify.send(());
     }

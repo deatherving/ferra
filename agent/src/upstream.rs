@@ -50,7 +50,12 @@ impl UpstreamClient {
     pub async fn snapshot(&self, prefix: &str) -> Result<Snapshot> {
         let url = Url::parse_with_params(&format!("{}/v1/kv", self.base), &[("prefix", prefix)])
             .context("build snapshot url")?;
-        let resp = self.http.get(url).send().await.context("snapshot request")?;
+        let resp = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .context("snapshot request")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -63,7 +68,12 @@ impl UpstreamClient {
     /// the watch event and our follow-up GET).
     pub async fn get_key(&self, key: &str) -> Result<Option<GetResponse>> {
         let url = format!("{}/v1/kv/{}", self.base, encode_key_path(key));
-        let resp = self.http.get(&url).send().await.context("get_key request")?;
+        let resp = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .context("get_key request")?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);

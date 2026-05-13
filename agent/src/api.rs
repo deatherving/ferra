@@ -183,7 +183,10 @@ async fn list_handler(
         return error_response(
             StatusCode::NOT_FOUND,
             "prefix_not_watched",
-            &format!("requested prefix {:?} is not under any watched prefix", q.prefix),
+            &format!(
+                "requested prefix {:?} is not under any watched prefix",
+                q.prefix
+            ),
         );
     };
 

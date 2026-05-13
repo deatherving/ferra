@@ -76,7 +76,10 @@ async fn list_handler(State(f): State<Fake>, Query(q): Query<ListQ>) -> Json<Val
     }))
 }
 
-async fn get_handler(State(f): State<Fake>, Path(key): Path<String>) -> Result<Json<Value>, StatusCode> {
+async fn get_handler(
+    State(f): State<Fake>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, StatusCode> {
     let map = f.state.lock().await;
     match map.get(&key) {
         Some(v) => Ok(Json(json!({
@@ -181,7 +184,9 @@ async fn agent_loads_snapshot_and_serves_cfg() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(format!("http://{agent_addr}/cfg/services/payment/timeout_ms"))
+        .get(format!(
+            "http://{agent_addr}/cfg/services/payment/timeout_ms"
+        ))
         .send()
         .await
         .unwrap();
@@ -231,9 +236,7 @@ async fn agent_lists_prefix() {
 
     let client = reqwest::Client::new();
     let resp = client
-        .get(format!(
-            "http://{agent_addr}/cfg?prefix=services/payment/"
-        ))
+        .get(format!("http://{agent_addr}/cfg?prefix=services/payment/"))
         .send()
         .await
         .unwrap();
@@ -244,9 +247,7 @@ async fn agent_lists_prefix() {
 
     // Sub-prefix narrowing works.
     let resp = client
-        .get(format!(
-            "http://{agent_addr}/cfg?prefix=services/payment/a"
-        ))
+        .get(format!("http://{agent_addr}/cfg?prefix=services/payment/a"))
         .send()
         .await
         .unwrap();
@@ -367,7 +368,11 @@ async fn long_poll_times_out_when_no_change() {
     assert_eq!(resp.status(), 200);
     let v: Value = resp.json().await.unwrap();
     assert_eq!(v, json!("v1"));
-    assert!(elapsed >= Duration::from_millis(300), "elapsed: {:?}", elapsed);
+    assert!(
+        elapsed >= Duration::from_millis(300),
+        "elapsed: {:?}",
+        elapsed
+    );
     assert!(elapsed < Duration::from_secs(2), "elapsed: {:?}", elapsed);
 }
 

@@ -19,11 +19,7 @@ struct SseEvent {
 /// Reads chunks from the response body and yields parsed SSE events as they
 /// complete. Stops once `wanted` events have been collected or `deadline` has
 /// elapsed.
-async fn collect_sse(
-    resp: reqwest::Response,
-    wanted: usize,
-    deadline: Duration,
-) -> Vec<SseEvent> {
+async fn collect_sse(resp: reqwest::Response, wanted: usize, deadline: Duration) -> Vec<SseEvent> {
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
     let mut out: Vec<SseEvent> = Vec::new();

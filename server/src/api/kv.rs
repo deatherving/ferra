@@ -117,12 +117,10 @@ pub async fn get_key(
     Path(key): Path<String>,
 ) -> AppResult<Json<GetResponse>> {
     validate_key(&key)?;
-    let row = sqlx::query(
-        "SELECT key, value, event_id, updated_at FROM kv_configs WHERE key = $1",
-    )
-    .bind(&key)
-    .fetch_optional(&state.pool)
-    .await?;
+    let row = sqlx::query("SELECT key, value, event_id, updated_at FROM kv_configs WHERE key = $1")
+        .bind(&key)
+        .fetch_optional(&state.pool)
+        .await?;
     let row = row.ok_or(AppError::NotFound)?;
     Ok(Json(GetResponse {
         key: row.try_get("key")?,
@@ -257,10 +255,9 @@ pub async fn list_prefix(
             })
         })
         .collect::<Result<_, sqlx::Error>>()?;
-    let latest_event_id: Option<i64> =
-        sqlx::query_scalar("SELECT MAX(id) FROM kv_events")
-            .fetch_one(&state.pool)
-            .await?;
+    let latest_event_id: Option<i64> = sqlx::query_scalar("SELECT MAX(id) FROM kv_events")
+        .fetch_one(&state.pool)
+        .await?;
     Ok(Json(ListResponse {
         prefix: q.prefix,
         latest_event_id: latest_event_id.unwrap_or(0),
