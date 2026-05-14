@@ -17,9 +17,11 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock* ./
 COPY server/Cargo.toml server/Cargo.toml
 COPY agent/Cargo.toml  agent/Cargo.toml
+COPY meta/Cargo.toml   meta/Cargo.toml
 COPY server/src        server/src
 COPY server/migrations server/migrations
 COPY agent/src         agent/src
+COPY meta/src          meta/src
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
