@@ -96,6 +96,11 @@ closed.
 | `FERRA_DATABASE_IAM_AUTH_ENABLED` | `false` | Set to `true` to enable RDS IAM auth. |
 | `FERRA_DATABASE_AWS_REGION` | _(none)_ | Required when IAM auth is enabled. |
 | `FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS` | `840` (14 min) | Must be `< 900` (token TTL is 15 minutes). |
+| `FERRA_DATABASE_POOL_MAX_CONNECTIONS` | `10` | Pool upper bound. |
+| `FERRA_DATABASE_POOL_MIN_CONNECTIONS` | `0` | Pool lower bound. Set to a small positive number (e.g. `2`) to keep a warm core through idle periods so the first request after quiet doesn't pay TLS+auth latency. |
+| `FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS` | `5` | How long a request waits for a free connection before returning 500. Bump for IAM-auth pools where cold-connection creation can legitimately take several seconds. |
+| `FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS` | `300` (5 min) | `0` disables. Connections idle longer than this get closed. |
+| `FERRA_DATABASE_POOL_MAX_LIFETIME_SECS` | `600` (10 min) | `0` disables. Forces connection rotation. In IAM mode must be `> 0` and `< 900` so connections rotate while their auth token is still being refreshed. |
 | `FERRA_HTTP_ADDR` | `0.0.0.0:8080` | HTTP listen address. |
 | `FERRA_MAX_VALUE_BYTES` | `262144` (256 KiB) | Max serialized value size. |
 | `FERRA_WATCH_HEARTBEAT_SECONDS` | `30` | SSE heartbeat interval. |

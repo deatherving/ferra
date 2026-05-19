@@ -3,23 +3,28 @@ use std::time::Duration;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 use tracing::{error, info};
 
-use crate::config::{DatabaseConfig, DiscreteDatabase, IamDatabase};
+use crate::config::{DatabaseConfig, DiscreteDatabase, IamDatabase, PoolConfig};
 
-const DEFAULT_MAX_CONNECTIONS: u32 = 10;
-const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Apply the operator-tunable pool settings (max/min connections, acquire
+/// timeout, idle timeout, max lifetime) uniformly to all auth modes.
+fn apply_pool_config(opts: PgPoolOptions, pool: &PoolConfig) -> PgPoolOptions {
+    opts.max_connections(pool.max_connections)
+        .min_connections(pool.min_connections)
+        .acquire_timeout(pool.acquire_timeout)
+        .idle_timeout(pool.idle_timeout)
+        .max_lifetime(pool.max_lifetime)
+}
 
-pub async fn connect(cfg: &DatabaseConfig) -> anyhow::Result<PgPool> {
+pub async fn connect(cfg: &DatabaseConfig, pool: &PoolConfig) -> anyhow::Result<PgPool> {
     match cfg {
-        DatabaseConfig::Url(url) => connect_url(url).await,
-        DatabaseConfig::Discrete(d) => connect_discrete(d).await,
-        DatabaseConfig::Iam(i) => connect_iam(i).await,
+        DatabaseConfig::Url(url) => connect_url(url, pool).await,
+        DatabaseConfig::Discrete(d) => connect_discrete(d, pool).await,
+        DatabaseConfig::Iam(i) => connect_iam(i, pool).await,
     }
 }
 
-async fn connect_url(url: &str) -> anyhow::Result<PgPool> {
-    let pool = PgPoolOptions::new()
-        .max_connections(DEFAULT_MAX_CONNECTIONS)
-        .acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)
+async fn connect_url(url: &str, pool: &PoolConfig) -> anyhow::Result<PgPool> {
+    let pool = apply_pool_config(PgPoolOptions::new(), pool)
         .connect(url)
         .await?;
     Ok(pool)
@@ -39,17 +44,15 @@ fn discrete_options(d: &DiscreteDatabase) -> PgConnectOptions {
     opts
 }
 
-async fn connect_discrete(d: &DiscreteDatabase) -> anyhow::Result<PgPool> {
+async fn connect_discrete(d: &DiscreteDatabase, pool: &PoolConfig) -> anyhow::Result<PgPool> {
     let opts = discrete_options(d);
-    let pool = PgPoolOptions::new()
-        .max_connections(DEFAULT_MAX_CONNECTIONS)
-        .acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)
+    let pool = apply_pool_config(PgPoolOptions::new(), pool)
         .connect_with(opts)
         .await?;
     Ok(pool)
 }
 
-async fn connect_iam(i: &IamDatabase) -> anyhow::Result<PgPool> {
+async fn connect_iam(i: &IamDatabase, pool_cfg: &PoolConfig) -> anyhow::Result<PgPool> {
     info!(
         host = %i.host,
         port = i.port,
@@ -65,17 +68,11 @@ async fn connect_iam(i: &IamDatabase) -> anyhow::Result<PgPool> {
         .await;
 
     let initial_opts = build_iam_options(i, &sdk_cfg).await?;
-    let pool = PgPoolOptions::new()
-        .max_connections(DEFAULT_MAX_CONNECTIONS)
-        .min_connections(0)
-        .acquire_timeout(DEFAULT_ACQUIRE_TIMEOUT)
-        // Belt-and-suspenders: rotate physical connections roughly every
-        // 10 minutes so any single connection is well within the IAM
-        // token TTL even if our refresher misses a tick. The real fix
-        // for fresh-token-for-new-connections is the refresh loop below
-        // that calls `pool.set_connect_options`.
-        .max_lifetime(Some(Duration::from_secs(10 * 60)))
-        .idle_timeout(Some(Duration::from_secs(5 * 60)))
+    // Pool sizing and timeouts come from PoolConfig (env-tunable). The IAM
+    // safety property — that connections rotate while their auth token is
+    // still valid for new connections — is enforced in config validation,
+    // which rejects max_lifetime=0 or >= 15 min when IAM is enabled.
+    let pool = apply_pool_config(PgPoolOptions::new(), pool_cfg)
         .connect_with(initial_opts)
         .await?;
 

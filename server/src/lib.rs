@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
-    let pool = db::connect(&cfg.database).await?;
+    let pool = db::connect(&cfg.database, &cfg.pool).await?;
     db::migrate(&pool).await?;
 
     let state = Arc::new(state::AppState::new(cfg.clone(), pool));

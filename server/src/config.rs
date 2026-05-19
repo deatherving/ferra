@@ -6,9 +6,49 @@ use sqlx::postgres::PgSslMode;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database: DatabaseConfig,
+    pub pool: PoolConfig,
     pub http_addr: String,
     pub max_value_bytes: usize,
     pub watch_heartbeat: Duration,
+}
+
+/// Postgres connection-pool tunables. All five are env-configurable so
+/// operators can adjust them per-environment without recompiling the
+/// binary. Reasonable defaults are applied if the env vars are unset.
+///
+/// `idle_timeout` and `max_lifetime` accept `0` to mean "disabled / no
+/// cap" — this maps to `None` in sqlx terms.
+#[derive(Debug, Clone)]
+pub struct PoolConfig {
+    /// `FERRA_DATABASE_POOL_MAX_CONNECTIONS` (default 10).
+    pub max_connections: u32,
+    /// `FERRA_DATABASE_POOL_MIN_CONNECTIONS` (default 0). Set this to a
+    /// small positive number to keep a warm core through idle periods so
+    /// the first request after quiet doesn't pay TLS+auth latency.
+    pub min_connections: u32,
+    /// `FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS` (default 5). How long a
+    /// request waits for a free connection before failing with a 500.
+    /// Bump this for IAM-auth pools where cold-connection creation can
+    /// legitimately take several seconds.
+    pub acquire_timeout: Duration,
+    /// `FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS` (default 300; 0 disables).
+    pub idle_timeout: Option<Duration>,
+    /// `FERRA_DATABASE_POOL_MAX_LIFETIME_SECS` (default 600; 0 disables).
+    /// Important for IAM auth: forces connection rotation well within the
+    /// 15-minute RDS auth-token TTL even if the refresher misses a tick.
+    pub max_lifetime: Option<Duration>,
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 10,
+            min_connections: 0,
+            acquire_timeout: Duration::from_secs(5),
+            idle_timeout: Some(Duration::from_secs(300)),
+            max_lifetime: Some(Duration::from_secs(600)),
+        }
+    }
 }
 
 /// How `ferra-server` should connect to Postgres.
@@ -62,6 +102,8 @@ pub struct IamDatabase {
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         let database = parse_database_config()?;
+        let pool = parse_pool_config()?;
+        validate_pool_against_database(&pool, &database)?;
         let http_addr =
             std::env::var("FERRA_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
         let max_value_bytes = std::env::var("FERRA_MAX_VALUE_BYTES")
@@ -79,10 +121,100 @@ impl Config {
 
         Ok(Self {
             database,
+            pool,
             http_addr,
             max_value_bytes,
             watch_heartbeat: Duration::from_secs(heartbeat_secs),
         })
+    }
+}
+
+/// IAM auth tokens expire 15 minutes after they're minted. Any individual
+/// physical connection must therefore be rotated out before its token
+/// expires — otherwise RDS will start rejecting queries on that connection
+/// and the pool will churn through authentication failures.
+///
+/// We enforce two things in IAM mode:
+/// * `max_lifetime` must be set (no "infinite-lifetime" connections), and
+/// * `max_lifetime` must be strictly less than 15 minutes.
+fn validate_pool_against_database(pool: &PoolConfig, db: &DatabaseConfig) -> anyhow::Result<()> {
+    if matches!(db, DatabaseConfig::Iam(_)) {
+        const IAM_TOKEN_TTL_SECS: u64 = 15 * 60;
+        match pool.max_lifetime {
+            None => anyhow::bail!(
+                "FERRA_DATABASE_POOL_MAX_LIFETIME_SECS=0 (disabled) is incompatible with IAM auth: \
+                 connections must rotate before their 15-minute IAM token expires",
+            ),
+            Some(d) if d.as_secs() >= IAM_TOKEN_TTL_SECS => anyhow::bail!(
+                "FERRA_DATABASE_POOL_MAX_LIFETIME_SECS ({}) must be < 900 for IAM auth \
+                 (IAM tokens expire at 15 minutes)",
+                d.as_secs(),
+            ),
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn parse_pool_config() -> anyhow::Result<PoolConfig> {
+    let defaults = PoolConfig::default();
+    let max_connections = parse_u32_env(
+        "FERRA_DATABASE_POOL_MAX_CONNECTIONS",
+        defaults.max_connections,
+    )?;
+    if max_connections == 0 {
+        anyhow::bail!("FERRA_DATABASE_POOL_MAX_CONNECTIONS must be > 0");
+    }
+    let min_connections = parse_u32_env(
+        "FERRA_DATABASE_POOL_MIN_CONNECTIONS",
+        defaults.min_connections,
+    )?;
+    if min_connections > max_connections {
+        anyhow::bail!(
+            "FERRA_DATABASE_POOL_MIN_CONNECTIONS ({min_connections}) must be \
+             <= FERRA_DATABASE_POOL_MAX_CONNECTIONS ({max_connections})",
+        );
+    }
+    let acquire_timeout_secs = parse_u64_env(
+        "FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS",
+        defaults.acquire_timeout.as_secs(),
+    )?;
+    if acquire_timeout_secs == 0 {
+        anyhow::bail!("FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS must be > 0");
+    }
+    let idle_default = defaults.idle_timeout.map(|d| d.as_secs()).unwrap_or(0);
+    let idle_secs = parse_u64_env("FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS", idle_default)?;
+    let max_life_default = defaults.max_lifetime.map(|d| d.as_secs()).unwrap_or(0);
+    let max_life_secs = parse_u64_env("FERRA_DATABASE_POOL_MAX_LIFETIME_SECS", max_life_default)?;
+
+    Ok(PoolConfig {
+        max_connections,
+        min_connections,
+        acquire_timeout: Duration::from_secs(acquire_timeout_secs),
+        idle_timeout: (idle_secs > 0).then(|| Duration::from_secs(idle_secs)),
+        max_lifetime: (max_life_secs > 0).then(|| Duration::from_secs(max_life_secs)),
+    })
+}
+
+fn parse_u32_env(key: &str, default: u32) -> anyhow::Result<u32> {
+    match std::env::var(key) {
+        Err(_) => Ok(default),
+        Ok(v) if v.trim().is_empty() => Ok(default),
+        Ok(v) => v
+            .trim()
+            .parse::<u32>()
+            .map_err(|e| anyhow::anyhow!("invalid {key}: {e}")),
+    }
+}
+
+fn parse_u64_env(key: &str, default: u64) -> anyhow::Result<u64> {
+    match std::env::var(key) {
+        Err(_) => Ok(default),
+        Ok(v) if v.trim().is_empty() => Ok(default),
+        Ok(v) => v
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| anyhow::anyhow!("invalid {key}: {e}")),
     }
 }
 
@@ -269,6 +401,11 @@ mod tests {
         "FERRA_DATABASE_IAM_AUTH_ENABLED",
         "FERRA_DATABASE_AWS_REGION",
         "FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS",
+        "FERRA_DATABASE_POOL_MAX_CONNECTIONS",
+        "FERRA_DATABASE_POOL_MIN_CONNECTIONS",
+        "FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS",
+        "FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS",
+        "FERRA_DATABASE_POOL_MAX_LIFETIME_SECS",
         "FERRA_HTTP_ADDR",
         "FERRA_MAX_VALUE_BYTES",
         "FERRA_WATCH_HEARTBEAT_SECONDS",
@@ -525,6 +662,102 @@ mod tests {
             }
             other => panic!("expected iam mode, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[serial]
+    fn pool_defaults_apply() {
+        clear();
+        set("FERRA_DATABASE_URL", "postgres://x");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.pool.max_connections, 10);
+        assert_eq!(cfg.pool.min_connections, 0);
+        assert_eq!(cfg.pool.acquire_timeout, Duration::from_secs(5));
+        assert_eq!(cfg.pool.idle_timeout, Some(Duration::from_secs(300)));
+        assert_eq!(cfg.pool.max_lifetime, Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    #[serial]
+    fn pool_env_vars_override_defaults() {
+        clear();
+        set("FERRA_DATABASE_URL", "postgres://x");
+        set("FERRA_DATABASE_POOL_MAX_CONNECTIONS", "25");
+        set("FERRA_DATABASE_POOL_MIN_CONNECTIONS", "3");
+        set("FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS", "30");
+        set("FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS", "120");
+        set("FERRA_DATABASE_POOL_MAX_LIFETIME_SECS", "300");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.pool.max_connections, 25);
+        assert_eq!(cfg.pool.min_connections, 3);
+        assert_eq!(cfg.pool.acquire_timeout, Duration::from_secs(30));
+        assert_eq!(cfg.pool.idle_timeout, Some(Duration::from_secs(120)));
+        assert_eq!(cfg.pool.max_lifetime, Some(Duration::from_secs(300)));
+    }
+
+    #[test]
+    #[serial]
+    fn pool_zero_idle_timeout_disables_it() {
+        clear();
+        set("FERRA_DATABASE_URL", "postgres://x");
+        set("FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS", "0");
+        set("FERRA_DATABASE_POOL_MAX_LIFETIME_SECS", "0");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.pool.idle_timeout, None);
+        assert_eq!(cfg.pool.max_lifetime, None);
+    }
+
+    #[test]
+    #[serial]
+    fn pool_rejects_max_connections_zero() {
+        clear();
+        set("FERRA_DATABASE_URL", "postgres://x");
+        set("FERRA_DATABASE_POOL_MAX_CONNECTIONS", "0");
+        let err = Config::from_env().unwrap_err();
+        assert!(err.to_string().contains("MAX_CONNECTIONS"));
+    }
+
+    #[test]
+    #[serial]
+    fn pool_rejects_min_greater_than_max() {
+        clear();
+        set("FERRA_DATABASE_URL", "postgres://x");
+        set("FERRA_DATABASE_POOL_MAX_CONNECTIONS", "5");
+        set("FERRA_DATABASE_POOL_MIN_CONNECTIONS", "10");
+        let err = Config::from_env().unwrap_err();
+        assert!(err.to_string().contains("MIN_CONNECTIONS"));
+    }
+
+    #[test]
+    #[serial]
+    fn pool_iam_rejects_disabled_max_lifetime() {
+        clear();
+        set("FERRA_DATABASE_IAM_AUTH_ENABLED", "true");
+        set("FERRA_DATABASE_HOST", "h");
+        set("FERRA_DATABASE_NAME", "n");
+        set("FERRA_DATABASE_USER", "u");
+        set("FERRA_DATABASE_AWS_REGION", "us-west-2");
+        set("FERRA_DATABASE_POOL_MAX_LIFETIME_SECS", "0");
+        let err = Config::from_env().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("MAX_LIFETIME") && msg.contains("IAM"),
+            "unexpected error message: {msg}",
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn pool_iam_rejects_max_lifetime_over_token_ttl() {
+        clear();
+        set("FERRA_DATABASE_IAM_AUTH_ENABLED", "true");
+        set("FERRA_DATABASE_HOST", "h");
+        set("FERRA_DATABASE_NAME", "n");
+        set("FERRA_DATABASE_USER", "u");
+        set("FERRA_DATABASE_AWS_REGION", "us-west-2");
+        set("FERRA_DATABASE_POOL_MAX_LIFETIME_SECS", "900");
+        let err = Config::from_env().unwrap_err();
+        assert!(err.to_string().contains("< 900"));
     }
 
     #[test]
