@@ -63,17 +63,17 @@ cargo install ferra-agent      # binary: ferra-agent
 Or build container images:
 
 ```bash
-docker build -t ghcr.io/deatherving/ferra:0.1.0       -f Dockerfile       .
-docker build -t ghcr.io/deatherving/ferra-agent:0.1.0 -f Dockerfile.agent .
+docker build -t ghcr.io/deatherving/ferra:0.2.0       -f Dockerfile       .
+docker build -t ghcr.io/deatherving/ferra-agent:0.2.0 -f Dockerfile.agent .
 ```
 
 Multi-arch (ARM dev → amd64 deploy):
 
 ```bash
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/deatherving/ferra:0.1.0 -f Dockerfile --push .
+  -t ghcr.io/deatherving/ferra:0.2.0 -f Dockerfile --push .
 docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/deatherving/ferra-agent:0.1.0 -f Dockerfile.agent --push .
+  -t ghcr.io/deatherving/ferra-agent:0.2.0 -f Dockerfile.agent --push .
 ```
 
 Replace the registry path with your own. The build context must be the repo
@@ -213,9 +213,28 @@ logged and retried; the pool is never closed.
 | `FERRA_DATABASE_IAM_AUTH_ENABLED`                 | `false`            | Set to `true` for RDS IAM auth.                        |
 | `FERRA_DATABASE_AWS_REGION`                       | _(none)_           | Required when IAM auth is enabled.                     |
 | `FERRA_DATABASE_IAM_TOKEN_REFRESH_INTERVAL_SECS`  | `840` (14 min)     | Must be `< 900` (token TTL is 15 min).                 |
+| `FERRA_DATABASE_POOL_MAX_CONNECTIONS`             | `10`               | Pool upper bound.                                      |
+| `FERRA_DATABASE_POOL_MIN_CONNECTIONS`             | `0`                | Pool lower bound. Set to e.g. `2` to keep a warm core through idle periods. |
+| `FERRA_DATABASE_POOL_ACQUIRE_TIMEOUT_SECS`        | `5`                | How long a request waits for a free connection. Bump for IAM-auth pools (cold-connection creation can take seconds). |
+| `FERRA_DATABASE_POOL_IDLE_TIMEOUT_SECS`           | `300` (5 min)      | `0` disables.                                          |
+| `FERRA_DATABASE_POOL_MAX_LIFETIME_SECS`           | `600` (10 min)     | `0` disables. In IAM mode must be `> 0` and `< 900`.   |
 | `FERRA_HTTP_ADDR`                                 | `0.0.0.0:8080`     | HTTP listen address.                                   |
 | `FERRA_MAX_VALUE_BYTES`                           | `262144` (256 KiB) | Max serialized value size.                             |
 | `FERRA_WATCH_HEARTBEAT_SECONDS`                   | `30`               | SSE heartbeat interval.                                |
+
+## Horizontal scaling
+
+Run multiple `ferra-server` replicas behind a load balancer. Writes on
+any replica issue `NOTIFY ferra_kv_events` inside the same transaction
+as the `kv_events` INSERT; every replica's listener picks up the
+notification and forwards it to its local SSE subscribers. A subscriber
+pinned to replica 1 sees writes that landed on replica 2 with the same
+sub-second latency it sees local writes.
+
+No configuration is needed — the listener starts automatically on every
+replica. Single-replica deployments use the same path. If a listener
+connection drops, notifications fired during the gap are replayed from
+`kv_events` on reconnect, so events are never durably lost.
 
 ## Environments
 

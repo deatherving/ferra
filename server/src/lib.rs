@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod listener;
 pub mod state;
 
 pub use config::Config;
@@ -16,7 +17,14 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let pool = db::connect(&cfg.database, &cfg.pool).await?;
     db::migrate(&pool).await?;
 
-    let state = Arc::new(state::AppState::new(cfg.clone(), pool));
+    let state = Arc::new(state::AppState::new(cfg.clone(), pool.clone()));
+    // Cross-replica fan-out: every replica runs one PgListener task that
+    // forwards `NOTIFY ferra_kv_events` into the local broadcast channel
+    // that feeds SSE subscribers. Single-replica deployments use the same
+    // path — adds ~5–10 ms over the previous in-process broadcast, which
+    // is invisible for a config service.
+    tokio::spawn(listener::run(pool, state.events_tx.clone()));
+
     let app = api::router(state);
 
     let addr: SocketAddr = cfg

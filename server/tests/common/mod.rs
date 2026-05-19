@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use ferra_server::{
     api,
-    config::{Config, DatabaseConfig},
-    db,
+    config::{Config, DatabaseConfig, PoolConfig},
+    db, listener,
     state::AppState,
 };
 use sqlx::postgres::PgPoolOptions;
@@ -46,7 +46,7 @@ async fn shared() -> &'static SharedPg {
 
             // Run migrations once via a setup pool. Goes through `db::connect`
             // so that public DB-layer code is exercised by the integration suite.
-            let setup_pool = db::connect(&DatabaseConfig::Url(url.clone()))
+            let setup_pool = db::connect(&DatabaseConfig::Url(url.clone()), &PoolConfig::default())
                 .await
                 .expect("db::connect for setup");
             db::migrate(&setup_pool).await.expect("run migrations");
@@ -121,12 +121,16 @@ pub async fn start_with(opts: StartOptions) -> TestServer {
 
     let cfg = Config {
         database: DatabaseConfig::Url("ignored-by-tests".into()),
+        pool: PoolConfig::default(),
         http_addr: "127.0.0.1:0".into(),
         max_value_bytes: opts.max_value_bytes,
         watch_heartbeat: opts.heartbeat,
     };
     let state = Arc::new(AppState::new(cfg, pool.clone()));
-    let app = api::router(state);
+    // Mirror lib.rs::run: spawn the cross-replica fan-out listener so SSE
+    // tests exercise the real NOTIFY/LISTEN path that production uses.
+    tokio::spawn(listener::run(pool.clone(), state.events_tx.clone()));
+    let app = api::router(state.clone());
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

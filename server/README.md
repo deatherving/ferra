@@ -71,15 +71,13 @@ chain: IRSA / EC2 instance profile / ECS task role / `AWS_*` env vars /
 `~/.aws/credentials`. The DB user needs the `rds_iam` PostgreSQL role
 granted in the database.
 
-How the refresh handles the 15-minute token TTL: at each tick the server
-regenerates the token, builds new `PgConnectOptions`, and calls
-`PgPool::set_connect_options(new_opts)`. That call affects only **future**
-physical connections — existing in-flight connections keep using their
-original token until they're rotated by `max_lifetime` (10 min in IAM
-mode) or returned to the pool naturally. New connections (pool growth,
-reconnect after idle, etc.) always use the freshest token. Refresh
-failures are logged and retried on the next tick; the pool is never
-closed.
+How token rotation stays smooth across the 15-minute TTL: at each tick
+the server mints a fresh token and updates the pool's connect options.
+Only **new** physical connections pick up the new token — existing
+connections keep their original token until
+`FERRA_DATABASE_POOL_MAX_LIFETIME_SECS` (default 10 min) rotates them
+out, or they're returned to the pool naturally. Refresh failures are
+logged and retried; the pool is never closed.
 
 ## Server configuration
 
@@ -106,6 +104,19 @@ closed.
 | `FERRA_WATCH_HEARTBEAT_SECONDS` | `30` | SSE heartbeat interval. |
 
 Postgres migrations run automatically at startup.
+
+## Horizontal scaling
+
+Run multiple replicas behind a load balancer. Writes on any replica
+issue `NOTIFY ferra_kv_events` inside the same transaction as the
+`kv_events` INSERT; every replica's listener forwards the notification
+to its local SSE subscribers. A subscriber pinned to one replica sees
+writes that landed on any other replica with sub-second latency.
+
+No configuration is needed — the listener starts automatically on every
+replica. If a listener connection drops, notifications fired during the
+gap are replayed from `kv_events` on reconnect, so events are never
+durably lost.
 
 ## HTTP endpoints
 

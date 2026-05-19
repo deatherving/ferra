@@ -10,7 +10,7 @@ use sqlx::Row;
 use crate::{
     db::escape_like,
     error::{AppError, AppResult},
-    events::{ChangeEvent, Operation},
+    listener,
     state::SharedState,
 };
 
@@ -130,19 +130,33 @@ pub async fn set_key(
     .bind(event_id)
     .execute(&mut *tx)
     .await?;
+    // Cross-replica fan-out: NOTIFY in the same transaction as the
+    // kv_events insert so subscribers (on this replica AND any other
+    // replica running its own LISTEN) only see the notification after the
+    // write is durably committed. Payload is small JSON; well under the
+    // 8 KB NOTIFY limit even for long keys.
+    let payload = build_notify_payload(event_id, &key, "set");
+    sqlx::query("SELECT pg_notify($1, $2)")
+        .bind(listener::CHANNEL)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-
-    let _ = state.events_tx.send(ChangeEvent {
-        event_id,
-        key: key.clone(),
-        operation: Operation::Set,
-    });
 
     Ok(Json(WriteResponse {
         key,
         event_id,
         operation: "set",
     }))
+}
+
+fn build_notify_payload(event_id: i64, key: &str, operation: &str) -> String {
+    serde_json::json!({
+        "event_id": event_id,
+        "key": key,
+        "operation": operation,
+    })
+    .to_string()
 }
 
 pub async fn delete_key(
@@ -172,13 +186,13 @@ pub async fn delete_key(
     .bind(&key)
     .fetch_one(&mut *tx)
     .await?;
+    let payload = build_notify_payload(event_id, &key, "delete");
+    sqlx::query("SELECT pg_notify($1, $2)")
+        .bind(listener::CHANNEL)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
-
-    let _ = state.events_tx.send(ChangeEvent {
-        event_id,
-        key: key.clone(),
-        operation: Operation::Delete,
-    });
 
     Ok((
         StatusCode::OK,
